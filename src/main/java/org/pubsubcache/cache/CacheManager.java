@@ -26,4 +26,8 @@ public class CacheManager {
     public void invalidate(String key) {
         cache.invalidate(key);
     }
+
+    public void invalidateAll() {
+        cache.invalidateAll();
+    }
 }
