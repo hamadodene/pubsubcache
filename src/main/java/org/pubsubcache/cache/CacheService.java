@@ -4,6 +4,7 @@ import org.apache.pulsar.client.api.Message;
 import org.apache.pulsar.client.api.PulsarClientException;
 import org.pubsubcache.pulsar.PulsarClientManager;
 
+import java.util.concurrent.*;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -14,6 +15,8 @@ public class CacheService {
     private final PulsarClientManager pulsarClientManager;
 
     private String nodeId;
+
+    private final ConcurrentMap<String, CompletableFuture<Object>> pendingFetches = new ConcurrentHashMap<>();
 
     public CacheService(String pulsarServiceUrl, String topic, String nodeId) throws PulsarClientException {
         cacheManager = new CacheManager();
@@ -27,8 +30,27 @@ public class CacheService {
         logger.info("PUT key: " + key + ", value: " + value);
     }
 
+    //Local get
     public Object get(String key) {
         return cacheManager.get(key);
+    }
+
+    // Remote fetch
+    public Object fetch(String key) throws PulsarClientException, InterruptedException, ExecutionException, TimeoutException {
+        Object value = cacheManager.get(key);
+        if (value != null) {
+            return value;
+        }
+
+        CompletableFuture<Object> future = new CompletableFuture<>();
+        pendingFetches.put(key, future);
+        pulsarClientManager.sendMessage("FETCH_REQUEST:" + nodeId + ":" + key);
+
+        try {
+            return future.get(5, TimeUnit.SECONDS);
+        } finally {
+            pendingFetches.remove(key);
+        }
     }
 
     public void invalidate(String key) throws PulsarClientException {
@@ -77,6 +99,27 @@ public class CacheService {
             case "INVALIDATE":
                 cacheManager.invalidate(key);
                 logger.info("Received INVALIDATE key: " + key);
+                break;
+            case "FETCH_REQUEST":
+                Object result = cacheManager.get(key);
+                if (result != null) {
+                    try {
+                        pulsarClientManager.sendMessage("FETCH_RESPONSE:" + nodeId + ":" + key + ":" + result + ":" + System.currentTimeMillis());
+                    } catch (PulsarClientException e) {
+                        logger.log(Level.SEVERE, "Error sending FETCH_RESPONSE", e);
+                    }
+                }
+                break;
+            case "FETCH_RESPONSE":
+                if (pendingFetches.containsKey(key)) {
+                    String responseValue = parts[3];
+                    CompletableFuture<Object> fetchFuture = pendingFetches.get(key);
+                    if (fetchFuture != null) {
+                        cacheManager.put(key, responseValue); // Save the value in cache
+                        fetchFuture.complete(responseValue);
+                        pendingFetches.remove(key);
+                    }
+                }
                 break;
             default:
                 break;
