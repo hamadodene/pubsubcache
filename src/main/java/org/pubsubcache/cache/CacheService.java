@@ -4,7 +4,7 @@ import org.apache.pulsar.client.api.Message;
 import org.apache.pulsar.client.api.PulsarClientException;
 import org.pubsubcache.pulsar.PulsarClientManager;
 
-import java.io.IOException;
+import java.io.*;
 import java.util.concurrent.*;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -29,8 +29,8 @@ public class CacheService {
         this.pulsarServiceUrl = System.getProperty("pulsar.serviceUrl");
         this.topic = System.getProperty("pulsar.topic");
         this.nodeId = System.getProperty("node.id");
-        this.maxReconnectAttempts = Integer.parseInt(System.getProperty("reconnect.attempts"));
-        this.reconnectInterval = Long.parseLong(System.getProperty("reconnect.interval"));
+        this.maxReconnectAttempts = Integer.parseInt(System.getProperty("reconnect.attempts", String.valueOf(maxReconnectAttempts)));
+        this.reconnectInterval = Long.parseLong(System.getProperty("reconnect.interval", String.valueOf(reconnectInterval)));
 
         pulsarClientManager = new PulsarClientManager(pulsarServiceUrl, topic, nodeId);
     }
@@ -38,7 +38,8 @@ public class CacheService {
     public void put(String key, Object value) throws PulsarClientException {
         cacheManager.put(key, value);
         try {
-            pulsarClientManager.sendMessage("PUT:" + nodeId + ":" + key + ":" + value.toString());
+            CacheMessage message = new CacheMessage("PUT", nodeId, key, value.toString(), System.currentTimeMillis());
+            sendMessage(message);
         } catch (PulsarClientException e) {
             handleException("Failed to send PUT message", e);
         }
@@ -60,7 +61,8 @@ public class CacheService {
         CompletableFuture<Object> future = new CompletableFuture<>();
         pendingFetches.put(key, future);
         try {
-            pulsarClientManager.sendMessage("FETCH_REQUEST:" + nodeId + ":" + key);
+            CacheMessage message = new CacheMessage("FETCH_REQUEST", nodeId, key, null, System.currentTimeMillis());
+            sendMessage(message);
         } catch (PulsarClientException e) {
             handleException("Failed to send FETCH_REQUEST message", e);
         }
@@ -75,7 +77,8 @@ public class CacheService {
     public void invalidate(String key) throws PulsarClientException {
         cacheManager.invalidate(key);
         try {
-            pulsarClientManager.sendMessage("INVALIDATE:" + nodeId + ":" + key);
+            CacheMessage message = new CacheMessage("INVALIDATE", nodeId, key, null, System.currentTimeMillis());
+            sendMessage(message);
         } catch (PulsarClientException e) {
             handleException("Failed to send INVALIDATE message", e);
         }
@@ -93,25 +96,28 @@ public class CacheService {
             while (true) {
                 try {
                     Message<byte[]> message = pulsarClientManager.receiveMessage();
-                    String msgContent = new String(message.getData());
-                    processMessage(msgContent);
-                } catch (PulsarClientException e) {
+                    CacheMessage cacheMessage = deserialize(message.getData());
+                    processMessage(cacheMessage);
+                } catch (PulsarClientException e ) {
                     logger.log(Level.SEVERE, "Failed to receive message, attempting to reconnect", e);
                     if (!attemptReconnect()) {
                         logger.log(Level.SEVERE, "Reconnection attempts failed, clearing cache");
                         cacheManager.invalidateAll();
                         break;
                     }
+                } catch (IOException | ClassNotFoundException e) {
+                    logger.log(Level.SEVERE, "error processing message ", e.getMessage());
+                    // do nothing
+                    // Future debug to check if this can be a bug
                 }
             }
         }).start();
     }
 
-    private void processMessage(String message) {
-        String[] parts = message.split(":");
-        String action = parts[0];
-        String senderNodeId = parts[1];
-        String key = parts[2];
+    private void processMessage(CacheMessage message) {
+        String action = message.getAction();
+        String senderNodeId = message.getNodeId();
+        String key = message.getKey();
 
         // Ignore messages from the same node
         if (senderNodeId.equals(nodeId)) {
@@ -120,19 +126,19 @@ public class CacheService {
 
         switch (action) {
             case "PUT":
-                String value = parts[3];
-                cacheManager.put(key, value);
-                logger.info("Received PUT key: " + key + ", value: " + value);
+                cacheManager.put(key, message.getValue());
+                logger.info("Received PUT key: " + key + ", value: " + message.getValue() + " from node: " + senderNodeId);
                 break;
             case "INVALIDATE":
                 cacheManager.invalidate(key);
-                logger.info("Received INVALIDATE key: " + key);
+                logger.info("Received INVALIDATE key: " + key + " from node: " + senderNodeId);
                 break;
             case "FETCH_REQUEST":
-                Object result = cacheManager.get(key);
-                if (result != null) {
+                Object value = cacheManager.get(key);
+                if (value != null) {
+                    CacheMessage responseMessage = new CacheMessage("FETCH_RESPONSE", nodeId, key, value.toString(), System.currentTimeMillis());
                     try {
-                        pulsarClientManager.sendMessage("FETCH_RESPONSE:" + nodeId + ":" + key + ":" + result + ":" + System.currentTimeMillis());
+                        sendMessage(responseMessage);
                     } catch (PulsarClientException e) {
                         logger.log(Level.SEVERE, "Error sending FETCH_RESPONSE", e);
                     }
@@ -140,11 +146,11 @@ public class CacheService {
                 break;
             case "FETCH_RESPONSE":
                 if (pendingFetches.containsKey(key)) {
-                    String responseValue = parts[3];
                     CompletableFuture<Object> fetchFuture = pendingFetches.get(key);
                     if (fetchFuture != null) {
-                        cacheManager.put(key, responseValue); // Save the value in cache
-                        fetchFuture.complete(responseValue);
+                        String messageValue = message.getValue();
+                        cacheManager.put(key, messageValue); // Save the value in cache
+                        fetchFuture.complete(messageValue);
                         pendingFetches.remove(key);
                     }
                 }
@@ -154,6 +160,27 @@ public class CacheService {
         }
     }
 
+    private void sendMessage(CacheMessage message) throws PulsarClientException {
+        byte[] serializedMessage = serialize(message);
+        pulsarClientManager.sendMessage(serializedMessage);
+    }
+
+    private byte[] serialize(CacheMessage message) throws PulsarClientException {
+        try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
+             ObjectOutputStream out = new ObjectOutputStream(bos)) {
+            out.writeObject(message);
+            return bos.toByteArray();
+        } catch (IOException e) {
+            throw new PulsarClientException("Failed to serialize message", e);
+        }
+    }
+
+    private CacheMessage deserialize(byte[] data) throws IOException, ClassNotFoundException {
+        try (ByteArrayInputStream bis = new ByteArrayInputStream(data);
+             ObjectInputStream in = new ObjectInputStream(bis)) {
+            return (CacheMessage) in.readObject();
+        }
+    }
 
     private void handleException(String message, PulsarClientException e) throws CacheInvalidationException {
         logger.log(Level.SEVERE, message, e);
@@ -163,7 +190,6 @@ public class CacheService {
             throw new CacheInvalidationException(message, e);
         }
     }
-
 
     private boolean attemptReconnect() {
         for (int attempt = 1; attempt <= maxReconnectAttempts; attempt++) {

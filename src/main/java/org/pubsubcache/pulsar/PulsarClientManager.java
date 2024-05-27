@@ -24,8 +24,8 @@ public class PulsarClientManager {
                 .subscribe();
     }
 
-    public void sendMessage(String message) throws PulsarClientException {
-        producer.send(message.getBytes());
+    public void sendMessage(byte[] message) throws PulsarClientException {
+        producer.send(message);
     }
 
     public Message<byte[]> receiveMessage() throws PulsarClientException {
