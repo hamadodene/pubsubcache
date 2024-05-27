@@ -2,12 +2,14 @@ package org.pubsubcache.pulsar;
 
 import org.apache.pulsar.client.api.*;
 
+import java.util.Random;
+
 public class PulsarClientManager {
     private final PulsarClient client;
     private final Producer<byte[]> producer;
     private final Consumer<byte[]> consumer;
 
-    public PulsarClientManager(String serviceUrl, String topic) throws PulsarClientException {
+    public PulsarClientManager(String serviceUrl, String topic, String nodeId) throws PulsarClientException {
         client = PulsarClient.builder()
                 .serviceUrl(serviceUrl)
                 .build();
@@ -18,7 +20,7 @@ public class PulsarClientManager {
 
         consumer = client.newConsumer()
                 .topic(topic)
-                .subscriptionName("cache-subscription")
+                .subscriptionName(nodeId + new Random().nextInt())
                 .subscribe();
     }
 
