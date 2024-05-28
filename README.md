@@ -25,6 +25,6 @@ If the Pulsar client fails, the node will retry a maximum number of attempts. If
 **Note**: This can be improved in the future.
 
 ## To Do
-- Implement unit tests
-- Write multi-node tests
 - Publish to Maven repository
+- Handle some consistency problem in distributed cache and Justify some choose
+- Add more tests
