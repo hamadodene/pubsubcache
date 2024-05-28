@@ -21,6 +21,8 @@ public class CacheService {
 
     private int maxReconnectAttempts = 3;
     private long reconnectInterval = 5000; // 5 seconds
+    private long maxReconnectInterval = 60000;
+    private boolean degradedMode;
 
     private final ConcurrentMap<String, CompletableFuture<Object>> pendingFetches = new ConcurrentHashMap<>();
 
@@ -31,17 +33,21 @@ public class CacheService {
         this.nodeId = System.getProperty("node.id");
         this.maxReconnectAttempts = Integer.parseInt(System.getProperty("reconnect.attempts", String.valueOf(maxReconnectAttempts)));
         this.reconnectInterval = Long.parseLong(System.getProperty("reconnect.interval", String.valueOf(reconnectInterval)));
+        this.maxReconnectInterval = Long.parseLong(System.getProperty("max.reconnect.interval", String.valueOf(maxReconnectInterval))); // Max interval for backoff
 
         pulsarClientManager = new PulsarClientManager(pulsarServiceUrl, topic, nodeId);
+        this.degradedMode = false;
     }
 
     public void put(String key, Object value) throws PulsarClientException {
         cacheManager.put(key, value);
-        try {
+        if (!degradedMode) {
             CacheMessage message = new CacheMessage("PUT", nodeId, key, value.toString(), System.currentTimeMillis());
-            sendMessage(message);
-        } catch (PulsarClientException e) {
-            handleException("Failed to send PUT message", e);
+            try {
+                sendMessageWithRetry(message, maxReconnectAttempts, reconnectInterval);
+            } catch (PulsarClientException e) {
+                handleException("Failed to send PUT message after retries", e);
+            }
         }
         logger.info("PUT key: " + key + ", value: " + value);
     }
@@ -60,11 +66,13 @@ public class CacheService {
 
         CompletableFuture<Object> future = new CompletableFuture<>();
         pendingFetches.put(key, future);
-        try {
+        if (!degradedMode) {
             CacheMessage message = new CacheMessage("FETCH_REQUEST", nodeId, key, null, System.currentTimeMillis());
-            sendMessage(message);
-        } catch (PulsarClientException e) {
-            handleException("Failed to send FETCH_REQUEST message", e);
+            try {
+                sendMessageWithRetry(message, maxReconnectAttempts, reconnectInterval);
+            } catch (PulsarClientException e) {
+                handleException("Failed to send FETCH_REQUEST message after retries", e);
+            }
         }
 
         try {
@@ -76,14 +84,15 @@ public class CacheService {
 
     public void invalidate(String key) throws PulsarClientException {
         cacheManager.invalidate(key);
-        try {
+        if (!degradedMode) {
             CacheMessage message = new CacheMessage("INVALIDATE", nodeId, key, null, System.currentTimeMillis());
-            sendMessage(message);
-        } catch (PulsarClientException e) {
-            handleException("Failed to send INVALIDATE message", e);
+            try {
+                sendMessageWithRetry(message, maxReconnectAttempts, reconnectInterval);
+            } catch (PulsarClientException e) {
+                handleException("Failed to send INVALIDATE message after retries", e);
+            }
         }
-
-        logger.info("INVALIDATE key: " + key);
+        logger.info("INVALIDATE key: " + key + " from node: " + nodeId);
     }
 
     public void load(String key, Object value) {
@@ -95,20 +104,20 @@ public class CacheService {
             logger.log(Level.INFO, "Start pulsar topic listener..");
             while (true) {
                 try {
-                    Message<byte[]> message = pulsarClientManager.receiveMessage();
-                    CacheMessage cacheMessage = deserialize(message.getData());
-                    processMessage(cacheMessage);
-                } catch (PulsarClientException e ) {
+                    if (!degradedMode) {
+                        Message<byte[]> message = pulsarClientManager.receiveMessage();
+                        CacheMessage cacheMessage = deserialize(message.getData());
+                        processMessage(cacheMessage);
+                    }
+                } catch (ClassNotFoundException | PulsarClientException e) {
                     logger.log(Level.SEVERE, "Failed to receive message, attempting to reconnect", e);
                     if (!attemptReconnect()) {
-                        logger.log(Level.SEVERE, "Reconnection attempts failed, clearing cache");
-                        cacheManager.invalidateAll();
-                        break;
+                        logger.log(Level.SEVERE, "Reconnection attempts failed, entering degraded mode");
+                        degradedMode = true;
+                        notifyAdmin();
                     }
-                } catch (IOException | ClassNotFoundException e) {
-                    logger.log(Level.SEVERE, "error processing message ", e.getMessage());
-                    // do nothing
-                    // Future debug to check if this can be a bug
+                } catch (IOException e) {
+                    logger.log(Level.SEVERE, "Cannot deserialize message, please check...");
                 }
             }
         }).start();
@@ -185,8 +194,9 @@ public class CacheService {
     private void handleException(String message, PulsarClientException e) throws CacheInvalidationException {
         logger.log(Level.SEVERE, message, e);
         if (!attemptReconnect()) {
-            logger.log(Level.SEVERE, "Reconnection attempts failed, clearing cache");
-            cacheManager.invalidateAll();
+            logger.log(Level.SEVERE, "Reconnection attempts failed, entering degraded mode");
+            degradedMode = true;
+            notifyAdmin();
             throw new CacheInvalidationException(message, e);
         }
     }
@@ -194,7 +204,7 @@ public class CacheService {
     private boolean attemptReconnect() {
         for (int attempt = 1; attempt <= maxReconnectAttempts; attempt++) {
             try {
-                logger.log(Level.INFO,"Attempting to reconnect to Pulsar (attempt {0} of {1})", new Object[]{attempt, maxReconnectAttempts});
+                logger.log(Level.INFO, "Attempting to reconnect to Pulsar (attempt {0} of {1})", new Object[]{attempt, maxReconnectAttempts});
                 pulsarClientManager.close();
                 pulsarClientManager = new PulsarClientManager(pulsarServiceUrl, topic, nodeId);
                 return true; // Reconnection successful
@@ -208,5 +218,30 @@ public class CacheService {
             }
         }
         return false; // All reconnection attempts failed
+    }
+
+    private void sendMessageWithRetry(CacheMessage message, int maxAttempts, long initialInterval) throws PulsarClientException {
+        long interval = initialInterval;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                sendMessage(message);
+                return; // Message sent successfully, exit the method
+            } catch (PulsarClientException e) {
+                logger.log(Level.SEVERE, "Attempt {0} to send message failed: {1}", new Object[]{attempt, e});
+                if (attempt == maxAttempts) {
+                    throw e; // Re-throw the exception if max attempts reached
+                }
+                try {
+                    Thread.sleep(interval);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+                interval = Math.min(interval * 2, maxReconnectInterval); // Exponential backoff
+            }
+        }
+    }
+
+    private void notifyAdmin() {
+        logger.log(Level.SEVERE, "System is in degraded mode. Please check the Pulsar service.");
     }
 }

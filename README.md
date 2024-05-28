@@ -26,6 +26,5 @@ If the Pulsar client fails, the node will retry a maximum number of attempts. If
 
 ## To Do
 - Implement unit tests
-- Use ByteBuf for message value
 - Write multi-node tests
 - Publish to Maven repository

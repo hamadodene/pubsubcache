@@ -3,7 +3,28 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>org.pubsubcache</groupId>
   <artifactId>pubsubcache</artifactId>
+  <name>pubsubcache</name>
   <version>1.0-SNAPSHOT</version>
+  <description>A distributed cache service using Caffeine Cache and Apache Pulsar</description>
+  <url>https://github.com/hamadodene/pubsubcache</url>
+  <developers>
+    <developer>
+      <id>hamadodene</id>
+      <name>Hamado Dene</name>
+      <email>hamadodene@yahoo.com</email>
+    </developer>
+  </developers>
+  <licenses>
+    <license>
+      <name>The Apache License, Version 2.0</name>
+      <url>http://www.apache.org/licenses/LICENSE-2.0.txt</url>
+    </license>
+  </licenses>
+  <scm>
+    <connection>scm:git:git://github.com/hamadodene/pubsubcache</connection>
+    <developerConnection>scm:git:ssh://github.com/hamadodene/pubsubcache</developerConnection>
+    <url>http://github.com/yourusername/pubsub-cache</url>
+  </scm>
   <build>
     <plugins>
       <plugin>
@@ -51,8 +72,41 @@
           </filters>
         </configuration>
       </plugin>
+      <plugin>
+        <groupId>org.sonatype.plugins</groupId>
+        <artifactId>nexus-staging-maven-plugin</artifactId>
+        <version>1.6.13</version>
+        <extensions>true</extensions>
+        <configuration>
+          <serverId>ossrh</serverId>
+          <nexusUrl>https://oss.sonatype.org/</nexusUrl>
+          <autoReleaseAfterClose>true</autoReleaseAfterClose>
+        </configuration>
+      </plugin>
+      <plugin>
+        <artifactId>maven-source-plugin</artifactId>
+        <version>3.3.1</version>
+        <executions>
+          <execution>
+            <id>attach-sources</id>
+            <goals>
+              <goal>jar-no-fork</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
     </plugins>
   </build>
+  <distributionManagement>
+    <repository>
+      <id>ossrh</id>
+      <url>https://oss.sonatype.org/service/local/staging/deploy/maven2/</url>
+    </repository>
+    <snapshotRepository>
+      <id>ossrh</id>
+      <url>https://oss.sonatype.org/content/repositories/snapshots</url>
+    </snapshotRepository>
+  </distributionManagement>
   <properties>
     <maven.compiler.target>17</maven.compiler.target>
     <maven.compiler.source>17</maven.compiler.source>
