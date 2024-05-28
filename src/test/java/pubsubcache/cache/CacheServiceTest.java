@@ -72,7 +72,4 @@ public class CacheServiceTest {
 
         assertEquals(value, fetchedValue, "Fetched value should match the put value");
     }
-
-    // To do
-    // Multi node PUT + Fetch
 }
