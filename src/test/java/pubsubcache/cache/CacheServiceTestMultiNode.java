@@ -10,6 +10,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.doThrow;
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS) //Reuse same instance of class for all test
 public class CacheServiceTestMultiNode {
@@ -65,6 +66,7 @@ public class CacheServiceTestMultiNode {
         assertEquals(2, cacheServiceNode2.getNumberOfNodes(), "All nodes should be registered");
         assertEquals(2, cacheServiceNode3.getNumberOfNodes(), "All nodes should be registered");
     }
+
     @Test
     public void testInvalidateAck() throws PulsarClientException, InterruptedException {
         String key = "testKey";
@@ -121,5 +123,33 @@ public class CacheServiceTestMultiNode {
 
         assertEquals(value, fetchedValueNode2, "Fetched value in node2 should match the put value from node1");
     }
+
+    @Test
+    public void testNodeFailureNotification() throws Exception {
+        String key = "testKey2";
+        String value = "testValue2";
+
+        // Put value from node1
+        cacheServiceNode1.put(key, value);
+
+        // Ensure the value is propagated to node2
+        Thread.sleep(1000); // Wait a moment to ensure propagation
+
+
+        // Simulate that node2 does not respond by stopping its listener thread
+        cacheServiceNode2.stopListener();
+
+        // Invalidate key from node1
+        cacheServiceNode1.invalidate(key);
+
+
+        // Wait for the scheduler to run and process the lack of response
+        Thread.sleep(6000);
+
+        // Check that a NODE_FAILURE message was sent
+        assertFalse(cacheServiceNode1.getActiveNodes().containsKey("node2"), "Node2 should be marked as inactive in node1");
+        assertFalse(cacheServiceNode3.getActiveNodes().containsKey("node2"), "Node2 should be marked as inactive in node3");
+    }
+
 
 }
