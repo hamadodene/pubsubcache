@@ -37,6 +37,7 @@ public class CacheService {
     private ScheduledExecutorService heartbeatScheduler;
     private ExecutorService listenerExecutor;
     private ExecutorService nodeMonitorExecutor;
+    private ScheduledExecutorService nodeCheckerScheduler;
 
     private static final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(Runtime.getRuntime().availableProcessors());
 
@@ -61,45 +62,56 @@ public class CacheService {
     }
 
     public void put(String key, Object value) throws PulsarClientException {
-        cacheManager.put(key, value);
         if (!degradedMode) {
+        cacheManager.put(key, value);
+
             CacheMessage message = new CacheMessage("PUT", nodeId, key, value.toString(), System.currentTimeMillis());
             try {
                 sendMessageWithRetry(message, maxReconnectAttempts, reconnectInterval);
             } catch (PulsarClientException e) {
                 handleException("Failed to send PUT message after retries", e);
             }
+            logger.info("PUT key: " + key + ", value: " + value);
+        } else {
+            logger.log(Level.SEVERE, "Cannot executed put..Cache is in degraded mode..please check");
         }
-        logger.info("PUT key: " + key + ", value: " + value);
     }
 
     //Local get
     public Object get(String key) {
-        return cacheManager.get(key);
+        if(!degradedMode) {
+            return cacheManager.get(key);
+        } else {
+            return null; // null will be handled by application
+        }
     }
 
     // Remote fetch
     public Object fetch(String key) throws PulsarClientException, InterruptedException, ExecutionException, TimeoutException {
-        Object value = cacheManager.get(key);
-        if (value != null) {
-            return value;
-        }
-
-        CompletableFuture<Object> future = new CompletableFuture<>();
-        pendingFetches.put(key, future);
-        if (!degradedMode) {
-            CacheMessage message = new CacheMessage("FETCH_REQUEST", nodeId, key, null, System.currentTimeMillis());
-            try {
-                sendMessageWithRetry(message, maxReconnectAttempts, reconnectInterval);
-            } catch (PulsarClientException e) {
-                handleException("Failed to send FETCH_REQUEST message after retries", e);
+        if(!degradedMode) {
+            Object value = cacheManager.get(key);
+            if (value != null) {
+                return value;
             }
-        }
 
-        try {
-            return future.get(5, TimeUnit.SECONDS);
-        } finally {
-            pendingFetches.remove(key);
+            CompletableFuture<Object> future = new CompletableFuture<>();
+            pendingFetches.put(key, future);
+            if (!degradedMode) {
+                CacheMessage message = new CacheMessage("FETCH_REQUEST", nodeId, key, null, System.currentTimeMillis());
+                try {
+                    sendMessageWithRetry(message, maxReconnectAttempts, reconnectInterval);
+                } catch (PulsarClientException e) {
+                    handleException("Failed to send FETCH_REQUEST message after retries", e);
+                }
+            }
+
+            try {
+                return future.get(5, TimeUnit.SECONDS);
+            } finally {
+                pendingFetches.remove(key);
+            }
+        } else {
+            return null; // null will be handled by application
         }
     }
 
@@ -141,7 +153,12 @@ public class CacheService {
     }
 
     public void load(String key, Object value) {
-        cacheManager.put(key, value);
+        if(!degradedMode) {
+            cacheManager.put(key, value);
+        } else
+        {
+            logger.log(Level.SEVERE, "Cannot executed load request, cache is in degradeMode, please check..");
+        }
     }
 
     public void startListener() throws PulsarClientException {
@@ -174,21 +191,33 @@ public class CacheService {
         // Periodically send heartbeats to indicate this node is active
         heartbeatScheduler = Executors.newSingleThreadScheduledExecutor();
         heartbeatScheduler.scheduleAtFixedRate(() -> {
+            logger.log(Level.INFO, nodeId + ": send node heartbeat..");
             sendHeartbeat();
         }, 0, 5, TimeUnit.SECONDS); // Send heartbeat every 10 seconds
+
+        nodeCheckerScheduler = Executors.newSingleThreadScheduledExecutor();
+        nodeCheckerScheduler.scheduleAtFixedRate(() -> {
+            logger.log(Level.INFO, nodeId + ": start active node status..");
+            checkNodeHeartbeats();
+        }, 0, 15, TimeUnit.SECONDS); // Check every 15 seconds
     }
 
     public void stopListener() {
         this.degradedMode = true;
-        if (listenerExecutor != null && !listenerExecutor.isShutdown()) {
-            listenerExecutor.shutdownNow();
-        }
         if (heartbeatScheduler != null && !heartbeatScheduler.isShutdown()) {
             heartbeatScheduler.shutdownNow();
         }
 
         if (nodeMonitorExecutor != null && !nodeMonitorExecutor.isShutdown()) {
             nodeMonitorExecutor.shutdownNow();
+        }
+
+        if (nodeCheckerScheduler != null && !nodeCheckerScheduler.isShutdown()) {
+            nodeCheckerScheduler.shutdownNow();
+        }
+
+        if (listenerExecutor != null && !listenerExecutor.isShutdown()) {
+            listenerExecutor.shutdownNow();
         }
 
         try {
@@ -310,6 +339,11 @@ public class CacheService {
         activeNodes.entrySet().removeIf(entry -> now - entry.getValue() > 30000);
     }
 
+    private void checkNodeHeartbeats() {
+        long now = System.currentTimeMillis();
+        activeNodes.entrySet().removeIf(entry -> now - entry.getValue() > 30000);
+    }
+
     private void sendMessage(CacheMessage message) throws PulsarClientException {
         byte[] serializedMessage = serialize(message);
         pulsarClientManager.sendMessage(serializedMessage);
@@ -343,11 +377,8 @@ public class CacheService {
     }
 
     private void markUnresponsiveNodes(Set<String> acks) {
-        long now = System.currentTimeMillis();
         for (String nodeId : activeNodes.keySet()) {
-            if (!acks.contains(nodeId)
-                //&& (now - activeNodes.get(nodeId) > 3000)
-            ) {
+            if (!acks.contains(nodeId)) {
                 activeNodes.remove(nodeId);
                 logger.log(Level.WARNING, this.nodeId + ": Marked node {0} as inactive due to lack of response", nodeId);
                 // Inform all nodes about the unresponsive node
@@ -432,6 +463,10 @@ public class CacheService {
 
     public int getNumberOfNodes() {
         return activeNodes.size();
+    }
+
+    public boolean isDegradedMode() {
+        return this.degradedMode;
     }
 
     private void sendMonitorMessage(CacheMessage message) throws PulsarClientException {

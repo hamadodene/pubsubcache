@@ -1,7 +1,10 @@
 package pubsubcache.cache;
 
 import org.apache.pulsar.client.api.PulsarClientException;
-import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 import org.pubsubcache.cache.CacheService;
 import org.testcontainers.containers.PulsarContainer;
 import org.testcontainers.utility.DockerImageName;
@@ -10,7 +13,6 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.doThrow;
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS) //Reuse same instance of class for all test
 public class CacheServiceTestMultiNode {
@@ -135,13 +137,11 @@ public class CacheServiceTestMultiNode {
         // Ensure the value is propagated to node2
         Thread.sleep(1000); // Wait a moment to ensure propagation
 
-
         // Simulate that node2 does not respond by stopping its listener thread
         cacheServiceNode2.stopListener();
 
         // Invalidate key from node1
         cacheServiceNode1.invalidate(key);
-
 
         // Wait for the scheduler to run and process the lack of response
         Thread.sleep(6000);
