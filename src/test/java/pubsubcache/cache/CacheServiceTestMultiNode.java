@@ -18,9 +18,12 @@ public class CacheServiceTestMultiNode {
     private CacheService cacheServiceNode1;
     private CacheService cacheServiceNode2;
 
+    private CacheService cacheServiceNode3;
+
+
     @BeforeAll
     public void setup() throws Exception {
-        pulsarContainer = new PulsarContainer(DockerImageName.parse("apachepulsar/pulsar:2.9.1"));
+        pulsarContainer = new PulsarContainer(DockerImageName.parse("apachepulsar/pulsar:3.2.3"));
         pulsarContainer.start();
 
         // Set common properties for testing
@@ -33,11 +36,19 @@ public class CacheServiceTestMultiNode {
         System.setProperty("node.id", "node1");
         cacheServiceNode1 = new CacheService();
         cacheServiceNode1.startListener();
+        cacheServiceNode1.startNodeMonitor();
 
         // Initialize node 2
         System.setProperty("node.id", "node2");
         cacheServiceNode2 = new CacheService();
         cacheServiceNode2.startListener();
+        cacheServiceNode2.startNodeMonitor();
+
+        // Initialize node 3
+        System.setProperty("node.id", "node3");
+        cacheServiceNode3 = new CacheService();
+        cacheServiceNode3.startListener();
+        cacheServiceNode3.startNodeMonitor();
     }
 
     @AfterAll
@@ -45,6 +56,35 @@ public class CacheServiceTestMultiNode {
         if (pulsarContainer != null) {
             pulsarContainer.stop();
         }
+    }
+
+    @Test
+    public void testNodeRegistration() throws InterruptedException {
+        Thread.sleep(2000); // Wait a moment to ensure registration
+        assertEquals(2, cacheServiceNode1.getNumberOfNodes(), "All nodes should be registered");
+        assertEquals(2, cacheServiceNode2.getNumberOfNodes(), "All nodes should be registered");
+        assertEquals(2, cacheServiceNode3.getNumberOfNodes(), "All nodes should be registered");
+    }
+    @Test
+    public void testInvalidateAck() throws PulsarClientException, InterruptedException {
+        String key = "testKey";
+        String value = "testValue";
+
+        // Put value from node1
+        cacheServiceNode1.put(key, value);
+
+        // Ensure the value is propagated to node2 and node3
+        Thread.sleep(1000); // Wait a moment to ensure propagation
+
+        // Invalidate key from node2
+        cacheServiceNode2.invalidate(key);
+
+        // Wait for ACKs
+        Thread.sleep(2000); // Wait a moment to ensure ACKs are received
+
+        // Check that the key has been invalidated in all nodes
+        assertNull(cacheServiceNode1.get(key), "Key should be invalidated in node1");
+        assertNull(cacheServiceNode3.get(key), "Key should be invalidated in node3");
     }
 
     @Test
@@ -60,27 +100,9 @@ public class CacheServiceTestMultiNode {
 
         Object cachedValueNode2 = cacheServiceNode2.get(key);
         assertEquals(value, cachedValueNode2, "Cached value in node2 should match the put value from node1");
-    }
 
-    @Test
-    public void testInvalidateAcrossNodes() throws PulsarClientException, InterruptedException {
-        String key = "testKey";
-        String value = "testValue";
-
-        // Put value from node1
-        cacheServiceNode1.put(key, value);
-
-        // Ensure the value is propagated to node2
-        Thread.sleep(1000); // Wait a moment to ensure propagation
-
-        // Invalidate key from node2
-        cacheServiceNode2.invalidate(key);
-
-        // Ensure the key is invalidated in node1
-        Thread.sleep(1000); // Wait a moment to ensure propagation
-
-        Object cachedValueNode1 = cacheServiceNode1.get(key);
-        assertNull(cachedValueNode1, "Cached value in node1 should be null after invalidation from node2");
+        Object cachedValueNode3 = cacheServiceNode3.get(key);
+        assertEquals(value, cachedValueNode3, "Cached value in node3 should match the put value from node1");
     }
 
     @Test
@@ -99,4 +121,5 @@ public class CacheServiceTestMultiNode {
 
         assertEquals(value, fetchedValueNode2, "Fetched value in node2 should match the put value from node1");
     }
+
 }

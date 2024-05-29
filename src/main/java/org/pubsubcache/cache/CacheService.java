@@ -5,6 +5,7 @@ import org.apache.pulsar.client.api.PulsarClientException;
 import org.pubsubcache.pulsar.PulsarClientManager;
 
 import java.io.*;
+import java.util.Set;
 import java.util.concurrent.*;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -14,7 +15,7 @@ public class CacheService {
 
     private final CacheManager cacheManager;
     private PulsarClientManager pulsarClientManager;
-
+    private PulsarClientManager monitorPulsarClientManager;
     private String nodeId;
     private String topic;
     private String pulsarServiceUrl;
@@ -24,7 +25,10 @@ public class CacheService {
     private long maxReconnectInterval = 60000;
     private boolean degradedMode;
 
+    private static final String NODE_REGISTRATION_TOPIC = "node-registration";
     private final ConcurrentMap<String, CompletableFuture<Object>> pendingFetches = new ConcurrentHashMap<>();
+    private ConcurrentMap<String, Set<String>> pendingInvalidations = new ConcurrentHashMap<>();
+    private ConcurrentMap<String, Long> activeNodes = new ConcurrentHashMap<>();
 
     public CacheService() throws IOException {
         cacheManager = new CacheManager();
@@ -35,8 +39,14 @@ public class CacheService {
         this.reconnectInterval = Long.parseLong(System.getProperty("reconnect.interval", String.valueOf(reconnectInterval)));
         this.maxReconnectInterval = Long.parseLong(System.getProperty("max.reconnect.interval", String.valueOf(maxReconnectInterval))); // Max interval for backoff
 
-        pulsarClientManager = new PulsarClientManager(pulsarServiceUrl, topic, nodeId);
+        this.pulsarClientManager = new PulsarClientManager(pulsarServiceUrl, topic, nodeId);
         this.degradedMode = false;
+        this.monitorPulsarClientManager = new PulsarClientManager(pulsarServiceUrl, NODE_REGISTRATION_TOPIC, nodeId);
+    }
+
+    private void registerNode() throws PulsarClientException {
+        CacheMessage registrationMessage = new CacheMessage("NODE_REGISTRATION", nodeId, null, null, System.currentTimeMillis());
+        sendRegistrationMessage(registrationMessage);
     }
 
     public void put(String key, Object value) throws PulsarClientException {
@@ -86,13 +96,14 @@ public class CacheService {
         cacheManager.invalidate(key);
         if (!degradedMode) {
             CacheMessage message = new CacheMessage("INVALIDATE", nodeId, key, null, System.currentTimeMillis());
+            pendingInvalidations.putIfAbsent(key, ConcurrentHashMap.newKeySet());
             try {
                 sendMessageWithRetry(message, maxReconnectAttempts, reconnectInterval);
             } catch (PulsarClientException e) {
                 handleException("Failed to send INVALIDATE message after retries", e);
             }
         }
-        logger.info("INVALIDATE key: " + key + " from node: " + nodeId);
+        logger.info(nodeId + ": INVALIDATE key: " + key + " from node: " + nodeId);
     }
 
     public void load(String key, Object value) {
@@ -100,8 +111,9 @@ public class CacheService {
     }
 
     public void startListener() throws PulsarClientException {
+        registerNode();
         new Thread(() -> {
-            logger.log(Level.INFO, "Start pulsar topic listener..");
+            logger.log(Level.INFO, nodeId + ": Start pulsar topic listener..");
             while (true) {
                 try {
                     if (!degradedMode) {
@@ -123,6 +135,33 @@ public class CacheService {
         }).start();
     }
 
+    public void startNodeMonitor() {
+        new Thread(() -> {
+            logger.log(Level.INFO, nodeId + ": Start node monitor listener..");
+            while (true) {
+                try {
+                    Message<byte[]> message = monitorPulsarClientManager.receiveMessage();
+                    CacheMessage cacheMessage = deserialize(message.getData());
+                    processRegistrationMessage(cacheMessage);
+                } catch (PulsarClientException | ClassNotFoundException e) {
+                    logger.log(Level.SEVERE,"Failed to receive message in node monitor", e);
+                } catch (IOException e) {
+                    logger.log(Level.SEVERE,"Cannot deserialize message, please check...", e.getMessage());
+                }
+            }
+        }).start();
+
+        // Periodically send heartbeats to indicate this node is active
+        Executors.newSingleThreadScheduledExecutor().scheduleAtFixedRate(() -> {
+            try {
+                CacheMessage heartbeatMessage = new CacheMessage("NODE_HEARTBEAT", nodeId, null, null, System.currentTimeMillis());
+                sendRegistrationMessage(heartbeatMessage);
+            } catch (PulsarClientException e) {
+                logger.log(Level.SEVERE,"Failed to send heartbeat message", e);
+            }
+        }, 0, 10, TimeUnit.SECONDS); // Send heartbeat every 10 seconds
+    }
+
     private void processMessage(CacheMessage message) {
         String action = message.getAction();
         String senderNodeId = message.getNodeId();
@@ -136,11 +175,22 @@ public class CacheService {
         switch (action) {
             case "PUT":
                 cacheManager.put(key, message.getValue());
-                logger.info("Received PUT key: " + key + ", value: " + message.getValue() + " from node: " + senderNodeId);
+                logger.info(nodeId + ": Received PUT key: " + key + ", value: " + message.getValue() + " from node: " + senderNodeId);
                 break;
             case "INVALIDATE":
                 cacheManager.invalidate(key);
-                logger.info("Received INVALIDATE key: " + key + " from node: " + senderNodeId);
+                sendInvalidateAck(senderNodeId, key);
+                logger.info(nodeId + ": Received INVALIDATE key: " + key + " from node: " + senderNodeId);
+                break;
+            case "INVALIDATE_ACK":
+                Set<String> acks = pendingInvalidations.get(key);
+                if (acks != null) {
+                    acks.add(senderNodeId);
+                    if (acks.size() == getNumberOfNodes() - 1) {
+                        pendingInvalidations.remove(key);
+                        logger.info(nodeId + ": All nodes have acknowledged INVALIDATE for key: " + key);
+                    }
+                }
                 break;
             case "FETCH_REQUEST":
                 Object value = cacheManager.get(key);
@@ -169,9 +219,57 @@ public class CacheService {
         }
     }
 
+    private void processRegistrationMessage(CacheMessage message) {
+        String action = message.getAction();
+        String senderNodeId = message.getNodeId();
+
+        // Ignore messages from the same node
+        if (senderNodeId.equals(nodeId)) {
+            return;
+        }
+
+        switch (action) {
+            case "NODE_REGISTRATION":
+                logger.log(Level.INFO, nodeId + ": receive node {0} registration..", senderNodeId);
+                activeNodes.put(senderNodeId, System.currentTimeMillis());
+                // Send immediate heartbeat in response to registration
+                sendHeartbeat();
+                break;
+            case "NODE_HEARTBEAT":
+                activeNodes.put(senderNodeId, System.currentTimeMillis());
+                break;
+            case "NODE_FAILURE":
+                activeNodes.remove(senderNodeId);
+                break;
+            default:
+                break;
+        }
+
+        // Remove nodes that haven't sent a heartbeat in the last 30 seconds
+        long now = System.currentTimeMillis();
+        activeNodes.entrySet().removeIf(entry -> now - entry.getValue() > 30000);
+    }
+
     private void sendMessage(CacheMessage message) throws PulsarClientException {
         byte[] serializedMessage = serialize(message);
         pulsarClientManager.sendMessage(serializedMessage);
+    }
+
+    private void sendHeartbeat() {
+        try {
+            CacheMessage heartbeatMessage = new CacheMessage("NODE_HEARTBEAT", nodeId, null, null, System.currentTimeMillis());
+            sendRegistrationMessage(heartbeatMessage);
+        } catch (PulsarClientException e) {
+            logger.log(Level.SEVERE,"Failed to send heartbeat message", e);
+        }
+    }
+    private void sendInvalidateAck(String receiverNodeId, String key) {
+        CacheMessage ackMessage = new CacheMessage("INVALIDATE_ACK", nodeId, key, null, System.currentTimeMillis());
+        try {
+            sendMessageWithRetry(ackMessage, maxReconnectAttempts, reconnectInterval);
+        } catch (PulsarClientException e) {
+            logger.log(Level.SEVERE,"Failed to send INVALIDATE_ACK message", e);
+        }
     }
 
     private byte[] serialize(CacheMessage message) throws PulsarClientException {
@@ -202,19 +300,22 @@ public class CacheService {
     }
 
     private boolean attemptReconnect() {
+        long interval = reconnectInterval;
         for (int attempt = 1; attempt <= maxReconnectAttempts; attempt++) {
             try {
-                logger.log(Level.INFO, "Attempting to reconnect to Pulsar (attempt {0} of {1})", new Object[]{attempt, maxReconnectAttempts});
+                logger.log(Level.SEVERE, "Attempting to reconnect to Pulsar (attempt {} of {})", new Object[]{attempt, maxReconnectAttempts});
                 pulsarClientManager.close();
                 pulsarClientManager = new PulsarClientManager(pulsarServiceUrl, topic, nodeId);
-                return true; // Reconnection successful
+                degradedMode = false; // Reconnection successful
+                return true;
             } catch (PulsarClientException e) {
-                logger.log(Level.SEVERE, "Reconnection attempt " + attempt + " failed:  ", e);
+                logger.log(Level.SEVERE,"Reconnection attempt {0} failed: {1}", new Object[]{attempt, e});
                 try {
-                    Thread.sleep(reconnectInterval);
+                    Thread.sleep(interval);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                 }
+                interval = Math.min(interval * 2, maxReconnectInterval); // Exponential backoff
             }
         }
         return false; // All reconnection attempts failed
@@ -242,6 +343,22 @@ public class CacheService {
     }
 
     private void notifyAdmin() {
-        logger.log(Level.SEVERE, "System is in degraded mode. Please check the Pulsar service.");
+        logger.log(Level.WARNING, "System is in degraded mode. Please check the Pulsar service.");
+    }
+
+    private void notifyNodesOfFailure() {
+        try {
+            CacheMessage failureMessage = new CacheMessage("NODE_FAILURE", nodeId, null, null, System.currentTimeMillis());
+            sendMessage(failureMessage);
+        } catch (PulsarClientException e) {
+            logger.log(Level.SEVERE, "Failed to send NODE_FAILURE message", e);
+        }
+    }
+    public int getNumberOfNodes() {
+        return activeNodes.size();
+    }
+    private void sendRegistrationMessage(CacheMessage message) throws PulsarClientException {
+        byte[] serializedMessage = serialize(message);
+        monitorPulsarClientManager.sendMessage(serializedMessage);
     }
 }
