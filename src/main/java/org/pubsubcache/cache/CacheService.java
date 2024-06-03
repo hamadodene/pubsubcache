@@ -63,7 +63,7 @@ public class CacheService {
 
     public void put(String key, Object value) throws PulsarClientException {
         if (!degradedMode) {
-        cacheManager.put(key, value);
+            cacheManager.put(key, value);
 
             CacheMessage message = new CacheMessage("PUT", nodeId, key, value.toString(), System.currentTimeMillis());
             try {
@@ -77,9 +77,15 @@ public class CacheService {
         }
     }
 
+    public void load(String key, Object value) {
+        if (!degradedMode) {
+            cacheManager.put(key, value);
+        }
+    }
+
     //Local get
     public Object get(String key) {
-        if(!degradedMode) {
+        if (!degradedMode) {
             return cacheManager.get(key);
         } else {
             return null; // null will be handled by application
@@ -88,7 +94,7 @@ public class CacheService {
 
     // Remote fetch
     public Object fetch(String key) throws PulsarClientException, InterruptedException, ExecutionException, TimeoutException {
-        if(!degradedMode) {
+        if (!degradedMode) {
             Object value = cacheManager.get(key);
             if (value != null) {
                 return value;
@@ -150,15 +156,6 @@ public class CacheService {
             }, 5, TimeUnit.SECONDS); // Check after 5 seconds
         }
         logger.info(nodeId + ": INVALIDATE key: " + key + " from node: " + nodeId);
-    }
-
-    public void load(String key, Object value) {
-        if(!degradedMode) {
-            cacheManager.put(key, value);
-        } else
-        {
-            logger.log(Level.SEVERE, "Cannot executed load request, cache is in degradeMode, please check..");
-        }
     }
 
     public void startListener() throws PulsarClientException {

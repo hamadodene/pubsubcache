@@ -114,8 +114,8 @@ public class CacheServiceTestMultiNode {
         String key = "testKey";
         String value = "testValue";
 
-        // Put value from node1
-        cacheServiceNode1.put(key, value);
+        // Put value locally in node1
+        cacheServiceNode1.load(key, value);
 
         // Ensure the value is propagated to node2
         Thread.sleep(1000); // Wait a moment to ensure propagation
