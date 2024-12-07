@@ -1,11 +1,5 @@
 package org.pubsubcache;
 
-import org.apache.pulsar.client.api.PulsarClientException;
-import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.servlet.ServletContextHandler;
-import org.eclipse.jetty.servlet.ServletHolder;
-import org.glassfish.jersey.servlet.ServletContainer;
-import org.pubsubcache.api.CacheApplication;
 import org.pubsubcache.cache.CacheService;
 
 import java.io.IOException;
@@ -15,8 +9,6 @@ import java.nio.file.Path;
 import java.util.Properties;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-
-import static org.glassfish.jersey.servlet.ServletProperties.JAXRS_APPLICATION_CLASS;
 
 public class Main {
     private static final Logger logger = Logger.getLogger(Main.class.getName());

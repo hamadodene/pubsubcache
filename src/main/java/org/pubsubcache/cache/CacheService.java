@@ -68,15 +68,14 @@ public class CacheService {
 
         // Start Jetty server
         Server server = new Server(8080);  // Run on port 8080
-
-
         ServletContextHandler context = new ServletContextHandler(ServletContextHandler.SESSIONS);
         context.setAttribute("server", this);
         context.setContextPath("/");
-        ServletHolder jerseyServlet = new ServletHolder(new ServletContainer());
+        ServletHolder jerseyServlet = context.addServlet(ServletContainer.class, "/api/*");
         jerseyServlet.setInitOrder(0);
         jerseyServlet.setInitParameter(JAXRS_APPLICATION_CLASS, CacheApplication.class.getCanonicalName());
-        context.addServlet(jerseyServlet, "/api/*");
+
+        server.setHandler(context);
         // Start the server
         server.start();
         logger.log(Level.INFO,"Jetty server started on http://localhost:8080");

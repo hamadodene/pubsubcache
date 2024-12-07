@@ -1,18 +1,21 @@
 package org.pubsubcache.api;
 
+import jakarta.ws.rs.core.MediaType;
 import org.pubsubcache.cache.CacheService;
 import org.apache.pulsar.client.api.PulsarClientException;
 
-import javax.servlet.ServletContext;
-import javax.ws.rs.*;
-import javax.ws.rs.core.Response;
+import jakarta.servlet.ServletContext;
+import jakarta.ws.rs.*;
+import jakarta.ws.rs.core.Response;
+
+import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 
 @Path("/cache")
 public class CacheResource {
 
-    @javax.ws.rs.core.Context
+    @jakarta.ws.rs.core.Context
     ServletContext context;
 
     @GET

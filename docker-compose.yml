@@ -23,7 +23,7 @@ services:
       - RECONNECT_INTERVAL=5000
       - MAX_RECONNECT_INTERVAL=60000
     ports:
-      - "8080" # Host port will be dynamic
+      - "0:8080" # Host port will be dynamic
     deploy:
       replicas: 3
     networks:
