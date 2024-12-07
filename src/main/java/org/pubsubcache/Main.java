@@ -1,47 +1,68 @@
 package org.pubsubcache;
 
 import org.apache.pulsar.client.api.PulsarClientException;
+import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.servlet.ServletContextHandler;
+import org.eclipse.jetty.servlet.ServletHolder;
+import org.glassfish.jersey.servlet.ServletContainer;
+import org.pubsubcache.api.CacheApplication;
 import org.pubsubcache.cache.CacheService;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Properties;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
+import static org.glassfish.jersey.servlet.ServletProperties.JAXRS_APPLICATION_CLASS;
+
 public class Main {
-    private static final java.util.logging.Logger logger = Logger.getLogger(Main.class.getName());
+    private static final Logger logger = Logger.getLogger(Main.class.getName());
 
     public static void main(String[] args) {
         try {
-            //load properties for testing purpose
-            // You can in general set properties like -Dnode.id=node1
-            // Or you can set to system properties
-            loadProperties();
-            CacheService cacheService = new CacheService();
+            // Load properties for testing purposes
+            // User can pass a custom properties file path as the first argument
+            String customPropertiesPath = args.length > 0 ? args[0] : null;
+            loadProperties(customPropertiesPath);
 
-            // Start listener for incoming Pulsar messages
-            cacheService.startListener();
-        } catch (PulsarClientException e) {
-            throw new RuntimeException(e);
-        } catch (IOException e) {
+            new CacheService();
+
+        } catch (Exception e) {
             throw new RuntimeException(e);
         }
     }
 
 
-    private static void loadProperties() {
-        try (InputStream input = Main.class.getClassLoader().getResourceAsStream("conf/application.properties")) {
-            if (input == null) {
-                System.out.println("Sorry, unable to find application.properties");
-                return;
+    private static void loadProperties(String customPropertiesPath) {
+        Properties prop = new Properties();
+
+        try (InputStream input = getPropertiesInputStream(customPropertiesPath)) {
+            if (input != null) {
+                prop.load(input);
+                prop.forEach((key, value) -> {
+                    if (System.getProperty((String) key) == null) {
+                        System.setProperty((String) key, (String) value);
+                    }
+                });
+                logger.log(Level.INFO,"Properties loaded successfully.");
+            } else {
+                logger.log(Level.WARNING,"No properties file found. Continuing with system properties.");
             }
-
-            Properties prop = new Properties();
-            prop.load(input);
-
-            prop.forEach((key, value) -> System.setProperty((String) key, (String) value));
         } catch (IOException ex) {
-            ex.printStackTrace();
+            throw new RuntimeException("Failed to load properties file", ex);
         }
+    }
+    private static InputStream getPropertiesInputStream(String customPath) throws IOException {
+        if (customPath != null) {
+            Path path = Path.of(customPath);
+            if (Files.exists(path)) {
+                logger.log(Level.WARNING, "Loading properties from custom path: " + customPath);
+                return Files.newInputStream(path);
+            }
+        }
+        return null;
     }
 }

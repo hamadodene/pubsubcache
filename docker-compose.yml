@@ -1,0 +1,37 @@
+services:
+  pulsar:
+    image: apachepulsar/pulsar:3.2.3
+    command: [ "bin/pulsar", "standalone" ]
+    ports:
+      - "6650:6650"
+      - "8080:8080"
+    networks:
+      - pubsubcache-net
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8080/metrics" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  pubsubcache:
+    image: pubsubcache:latest
+    environment:
+      - PULSAR_SERVICE_URL=pulsar://pulsar:6650
+      - PULSAR_TOPIC=pubsubcache
+      - RECONNECT_ATTEMPTS=3
+      - RECONNECT_INTERVAL=5000
+      - MAX_RECONNECT_INTERVAL=60000
+    ports:
+      - "8080" # Host port will be dynamic
+    deploy:
+      replicas: 3
+    networks:
+      - pubsubcache-net
+    depends_on:
+      pulsar:
+        condition: service_healthy
+
+networks:
+  pubsubcache-net:
+    driver: bridge

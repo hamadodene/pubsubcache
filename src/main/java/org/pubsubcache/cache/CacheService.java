@@ -2,6 +2,11 @@ package org.pubsubcache.cache;
 
 import org.apache.pulsar.client.api.Message;
 import org.apache.pulsar.client.api.PulsarClientException;
+import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.servlet.ServletContextHandler;
+import org.eclipse.jetty.servlet.ServletHolder;
+import org.glassfish.jersey.servlet.ServletContainer;
+import org.pubsubcache.api.CacheApplication;
 import org.pubsubcache.pulsar.PulsarClientManager;
 
 import java.io.*;
@@ -9,6 +14,8 @@ import java.util.Set;
 import java.util.concurrent.*;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+
+import static org.glassfish.jersey.servlet.ServletProperties.JAXRS_APPLICATION_CLASS;
 
 public class CacheService {
     private static final Logger logger = Logger.getLogger(CacheService.class.getName());
@@ -42,7 +49,7 @@ public class CacheService {
     private static final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(Runtime.getRuntime().availableProcessors());
 
 
-    public CacheService() throws IOException {
+    public CacheService() throws Exception {
         cacheManager = new CacheManager();
         this.pulsarServiceUrl = System.getProperty("pulsar.serviceUrl");
         this.topic = System.getProperty("pulsar.topic");
@@ -54,6 +61,26 @@ public class CacheService {
         this.pulsarClientManager = new PulsarClientManager(pulsarServiceUrl, topic, nodeId);
         this.degradedMode = false;
         this.monitorPulsarClientManager = new PulsarClientManager(pulsarServiceUrl, NODE_REGISTRATION_TOPIC, nodeId);
+
+        // Start listener for incoming Pulsar messages
+        startListener();
+        startNodeMonitor();
+
+        // Start Jetty server
+        Server server = new Server(8080);  // Run on port 8080
+
+
+        ServletContextHandler context = new ServletContextHandler(ServletContextHandler.SESSIONS);
+        context.setAttribute("server", this);
+        context.setContextPath("/");
+        ServletHolder jerseyServlet = new ServletHolder(new ServletContainer());
+        jerseyServlet.setInitOrder(0);
+        jerseyServlet.setInitParameter(JAXRS_APPLICATION_CLASS, CacheApplication.class.getCanonicalName());
+        context.addServlet(jerseyServlet, "/api/*");
+        // Start the server
+        server.start();
+        logger.log(Level.INFO,"Jetty server started on http://localhost:8080");
+        server.join();
     }
 
     private void registerNode() throws PulsarClientException {
