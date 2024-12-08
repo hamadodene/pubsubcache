@@ -73,4 +73,145 @@ public static void main(String[] args) {
         e.printStackTrace();
     }
 }
+```
 
+## Running the Project with Docker
+You can easily test this project using Docker.
+The repository contains a Dockerfile and a docker-compose.yml file to facilitate deployment.
+
+#### Prerequisites
+- Docker installed on your machine
+- Docker Compose installed
+
+#### Building and Running with Docker Compos
+Clone the repository: 
+  ```
+  git clone https://your-repo-url.git
+  cd your-project-directory
+  ```
+Build the project using maven
+  ```
+  mvn clean install -DSkipTests
+  ```
+Build the docker image
+  ```
+  docker build -t pubsubcache .
+  ```
+Start the services using Docker Compose
+  ```
+  docker-compose up
+  ```
+This will build and start the necessary containers, including:
+ - The application (pubsubcache) running on dynamic ports. 
+ - Apache Pulsar for messaging
+
+View running containers
+```
+# docker ps
+CONTAINER ID   IMAGE                       COMMAND                  CREATED        STATUS                    PORTS                                            NAMES
+bf930284f3ea   pubsubcache:latest          "/start.sh"              10 hours ago   Up 12 minutes             0.0.0.0:55042->8080/tcp                          pubsubcache-pubsubcache-2
+3ceb84c1ac67   pubsubcache:latest          "/start.sh"              10 hours ago   Up 12 minutes             0.0.0.0:55043->8080/tcp                          pubsubcache-pubsubcache-3
+e19cee8958ae   pubsubcache:latest          "/start.sh"              10 hours ago   Up 12 minutes             0.0.0.0:55044->8080/tcp                          pubsubcache-pubsubcache-1
+be1fa41c7d2f   apachepulsar/pulsar:3.2.3   "bin/pulsar standalo…"   10 hours ago   Up 12 minutes (healthy)   0.0.0.0:6650->6650/tcp, 0.0.0.0:8080->8080/tcp   pubsubcache-pulsar-1
+```
+## Exposed APIs
+The application exposes several APIs you can test. After starting the services, you can access them as follows:
+```
+Base URL: http://localhost:<dynamic_port>
+```
+Note: You can retrieve the dynamic port by running the docker ps command and checking the port mapping under the "PORTS" column. The output will display the host port assigned to your container
+
+### Endpoints 
+
+#### GET /get/{key}
+
+Retrieve a value from the cache by key.
+
+- URL: /api/cache/get/{key}
+- Method: GET
+- Response:
+  - 200 OK: Returns the cached value.
+  - 404 Not Found: If the key does not exist.
+
+Example curl command:
+```
+curl -X GET http://localhost:<dynamic_port>/api/cache/get/sampleKey
+```
+
+#### GET /fetch/{key}
+
+Fetch a value from the cache
+- URL: /api/cache/fetch/{key}
+- Method: GET
+- Response:
+  - 200 OK: Returns the fetched value.
+  - 500 Internal Server Error: If fetching fails.
+
+Example curl command:
+```
+# Load a key-value pair into the cache on one of the nodes
+# This stores "sampleKey" with the value "sampleValue" on node1
+curl -X POST "http://localhost:<node1_dynamic_port>/api/cache/load?key=sampleKey&value=sampleValue"
+
+# Attempt to fetch the value from a different node
+# This fetch request will search for "sampleKey" by contacting other nodes in the cluster if necessary
+curl -X GET "http://localhost:<node_2dynamic_port>/api/cache/fetch/sampleKey"
+
+```
+#### POST /load
+Load a key-value pair into the cache.
+
+- URL: /api/cache/load?key={key}&value={value}
+- Method: POST
+- Response:
+  - 200 OK: Confirmation message.
+
+Example curl command:
+```
+curl -X POST "http://localhost:<dynamic_port>/api/cache/load?key=sampleKey&value=sampleValue"
+```
+
+#### POST /put
+Put a key-value pair into the cache and publish the change via Pulsar.
+
+- URL: /api/cache/put?key={key}&value={value}
+- Method: POST
+- Response:
+  - 200 OK: Confirmation message.
+
+Example curl command:
+```
+curl -X POST "http://localhost:<dynamic_port>/api/cache/put?key=sampleKey&value=sampleValue"
+```
+
+#### DELETE /invalidate/{key}
+Invalidate (delete) a key from the cache.
+
+- URL: /api/cache/invalidate/{key}
+- Method: DELETE
+- Response:
+  - 200 OK: Confirmation message.
+  - 500 Internal Server Error: If invalidation fails.
+
+Example curl command:
+```
+curl -X DELETE http://localhost:<dynamic_port>/api/cache/invalidate/sampleKey
+```
+
+## Example api test
+
+### 1. Test LOAD Operation
+- **Action**: Load a key-value pair into Node1 using the `LOAD` API.
+- **Verification**: Retrieve the same key using the `GET` API on Node1 to ensure the value is stored correctly.
+
+### 2. Test FETCH Operation
+- **Action**: Load a key-value pair into Node1.
+- **Verification**: Use the `FETCH` API on Node3 to verify that the key-value pair loaded in Node1 can be retrieved by querying another node in the cluster.
+
+### 3. Test PUT Operation
+- **Action**: Store a key-value pair in Node1 using the `PUT` API.
+- **Verification**: Use the `GET` API on any node in the cluster to check that the key-value pair exists.
+
+### 4. Test INVALIDATE Operation
+- **Action**: Store a key-value pair in Node1 using the `PUT` API, then invalidate it.
+- **Verification**: Use the `GET` API to confirm that the key no longer exists after invalidation.

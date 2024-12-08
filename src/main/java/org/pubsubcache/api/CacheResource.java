@@ -1,14 +1,11 @@
 package org.pubsubcache.api;
 
-import jakarta.ws.rs.core.MediaType;
-import org.pubsubcache.cache.CacheService;
-import org.apache.pulsar.client.api.PulsarClientException;
-
 import jakarta.servlet.ServletContext;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.Response;
+import org.apache.pulsar.client.api.PulsarClientException;
+import org.pubsubcache.cache.CacheService;
 
-import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 
